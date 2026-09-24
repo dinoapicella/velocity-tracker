@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Velocità Bilanciere</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --fg:#14161a; --card:#ffffff; --border:#dfe2e8;
+    --accent:#3d6dff; --good:#2bb673; --bad:#ff5b5b; --muted:#6b7280;
+    box-sizing:border-box;
+    padding-top:env(safe-area-inset-top,0px);
+    padding-bottom:env(safe-area-inset-bottom,0px);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#0f1115; --fg:#eef0f3; --card:#1b1e26; --border:#2a2e3a; --muted:#9aa1ad;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0f1115; --fg:#eef0f3; --card:#1b1e26; --border:#2a2e3a; --muted:#9aa1ad;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    display:flex; flex-direction:column; align-items:center; gap:14px;
+    padding:16px 12px 24px;
+  }
+  h1{font-size:1.15rem; margin:4px 0 0; text-align:center}
+  .video-wrap{
+    position:relative; width:100%; max-width:520px; background:#000;
+    border-radius:14px; overflow:hidden; border:1px solid var(--border);
+  }
+  video{display:none}
+  canvas#canvas{width:100%; height:auto; display:block}
+  .status{font-size:0.85rem; min-height:1.2em; text-align:center; font-weight:600}
+  .status.ok{color:var(--good)}
+  .status.bad{color:var(--bad)}
+  .card{
+    width:100%; max-width:520px; background:var(--card); border:1px solid var(--border);
+    border-radius:14px; padding:12px 14px; display:flex; flex-direction:column; gap:10px;
+  }
+  .row{display:flex; flex-wrap:wrap; gap:10px; align-items:center}
+  label{font-size:0.85rem; color:var(--muted); display:flex; align-items:center; gap:6px}
+  input[type=number]{
+    width:80px; padding:5px 6px; border-radius:8px; border:1px solid var(--border);
+    background:transparent; color:var(--fg);
+  }
+  button{
+    border:none; border-radius:9px; padding:9px 12px; font-size:0.85rem; font-weight:600;
+    background:var(--accent); color:#fff; cursor:pointer;
+  }
+  button.secondary{background:transparent; color:var(--fg); border:1px solid var(--border)}
+  button:disabled{opacity:0.45; cursor:not-allowed}
+  .stats{display:flex; flex-wrap:wrap; gap:8px; text-align:center}
+  .stat{flex:1; min-width:80px}
+  .stat .val{font-size:1.3rem; font-weight:700}
+  .stat .lbl{font-size:0.68rem; color:var(--muted)}
+  canvas#chart{width:100%; height:110px; border-radius:10px; border:1px solid var(--border)}
+  small.hint{color:var(--muted); font-size:0.75rem}
+</style>
+</head>
+<body>
+  <h1>🏋️ Velocity Tracker Bilanciere</h1>
+  <div class="video-wrap">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="canvas"></canvas>
+  </div>
+  <div class="status" id="status">Attiva la fotocamera per iniziare.</div>
+
+  <div class="card">
+    <div class="row">
+      <button id="startCam">Attiva fotocamera</button>
+      <label>Diametro disco (m) <input type="number" id="plateDiam" value="0.45" step="0.01"></label>
+      <label>Carico totale (kg) <input type="number" id="totalWeight" value="60" step="1"></label>
+    </div>
+    <small class="hint">Inquadra lateralmente un disco del bilanciere: il rilevamento è automatico. Il diametro 0.45m è lo standard dei dischi bumper olimpici; cambialo se usi dischi più piccoli.</small>
+    <div class="row">
+      <button id="startTrack" disabled>▶ Inizia serie</button>
+      <button id="stopTrack" class="secondary" disabled>⏸ Ferma</button>
+      <button id="resetTrack" class="secondary" disabled>↺ Reset dati</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="stats">
+      <div class="stat"><div class="val" id="curVel">0.00</div><div class="lbl">m/s attuale</div></div>
+      <div class="stat"><div class="val" id="peakVel">0.00</div><div class="lbl">m/s picco</div></div>
+      <div class="stat"><div class="val" id="avgVel">0.00</div><div class="lbl">m/s media</div></div>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="val" id="peakPow">0</div><div class="lbl">W picco</div></div>
+      <div class="stat"><div class="val" id="avgPow">0</div><div class="lbl">W media</div></div>
+    </div>
+    <canvas id="chart" width="500" height="110"></canvas>
+  </div>
+
+<script>
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d', {willReadFrequently:true});
+const statusEl = document.getElementById('status');
+const chart = document.getElementById('chart');
+const cctx = chart.getContext('2d');
+
+const startCamBtn = document.getElementById('startCam');
+const startTrackBtn = document.getElementById('startTrack');
+const stopTrackBtn = document.getElementById('stopTrack');
+const resetTrackBtn = document.getElementById('resetTrack');
+const plateDiamInput = document.getElementById('plateDiam');
+const totalWeightInput = document.getElementById('totalWeight');
+
+let isTracking = false;
+let lastPos = null, lastTime = null;
+let velBuffer = [];
+let samples = [];
+let peakVel = 0;
+let missCount = 0;
+
+const SMALL_W = 160;
+let smallH = 120;
+let smallCanvas = document.createElement('canvas');
+let sctx = smallCanvas.getContext('2d', {willReadFrequently:true});
+let accum = null; // reused accumulator buffer
+
+startCamBtn.onclick = async () => {
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width:{ideal:1280}, height:{ideal:720} },
+      audio:false
+    });
+    video.srcObject = stream;
+    await video.play();
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    smallH = Math.round(SMALL_W * canvas.height / canvas.width);
+    smallCanvas.width = SMALL_W; smallCanvas.height = smallH;
+    accum = new Float32Array(SMALL_W * smallH);
+    statusEl.textContent = 'Cerco il bilanciere nell\'inquadratura...';
+    startTrackBtn.disabled = false;
+    resetTrackBtn.disabled = false;
+    requestAnimationFrame(draw);
+  }catch(e){
+    statusEl.textContent = 'Errore fotocamera: ' + e.message;
+  }
+};
+
+startTrackBtn.onclick = () => {
+  isTracking = true;
+  lastPos = null; lastTime = null;
+  velBuffer = []; samples = []; peakVel = 0;
+  startTrackBtn.disabled = true;
+  stopTrackBtn.disabled = false;
+};
+stopTrackBtn.onclick = () => {
+  isTracking = false;
+  startTrackBtn.disabled = false;
+  stopTrackBtn.disabled = true;
+};
+resetTrackBtn.onclick = () => {
+  isTracking = false;
+  lastPos = null; lastTime = null;
+  velBuffer = []; samples = []; peakVel = 0;
+  document.getElementById('curVel').textContent = '0.00';
+  document.getElementById('peakVel').textContent = '0.00';
+  document.getElementById('avgVel').textContent = '0.00';
+  document.getElementById('peakPow').textContent = '0';
+  document.getElementById('avgPow').textContent = '0';
+  cctx.clearRect(0,0,chart.width,chart.height);
+  startTrackBtn.disabled = false;
+  stopTrackBtn.disabled = true;
+};
+
+// Rileva un disco circolare tramite trasformata di Hough basata sul gradiente
+function detectPlate(){
+  const w = smallCanvas.width, h = smallCanvas.height;
+  sctx.drawImage(video, 0,0, w, h);
+  const img = sctx.getImageData(0,0,w,h).data;
+
+  const gray = new Float32Array(w*h);
+  for(let i=0, p=0; i<w*h; i++, p+=4){
+    gray[i] = 0.299*img[p] + 0.587*img[p+1] + 0.114*img[p+2];
+  }
+
+  const exX = [], exY = [], edX = [], edY = [];
+  const threshold = 40;
+  for(let y=1; y<h-1; y++){
+    for(let x=1; x<w-1; x++){
+      const i = y*w+x;
+      const gx = gray[i-1-w] - gray[i+1-w] + 2*(gray[i-1]-gray[i+1]) + gray[i-1+w] - gray[i+1+w];
+      const gy = gray[i-1-w] + 2*gray[i-w] + gray[i+1-w] - gray[i-1+w] - 2*gray[i+w] - gray[i+1+w];
+      const mag = Math.sqrt(gx*gx+gy*gy);
+      if(mag > threshold){
+        exX.push(x); exY.push(y);
+        edX.push(gx/mag); edY.push(gy/mag);
+      }
+    }
+  }
+  if(exX.length < 30) return null;
+
+  const minR = Math.max(4, w*0.045);
+  const maxR = w*0.30;
+  const steps = 6;
+  let best = {score:-1, cx:0, cy:0, r:0};
+
+  for(let s=0; s<steps; s++){
+    const r = minR + (maxR-minR) * s/(steps-1);
+    accum.fill(0);
+    for(let k=0; k<exX.length; k++){
+      const dx = edX[k]*r, dy = edY[k]*r;
+      let cx1 = Math.round(exX[k]-dx), cy1 = Math.round(exY[k]-dy);
+      let cx2 = Math.round(exX[k]+dx), cy2 = Math.round(exY[k]+dy);
+      if(cx1>=0 && cx1<w && cy1>=0 && cy1<h) accum[cy1*w+cx1]++;
+      if(cx2>=0 && cx2<w && cy2>=0 && cy2<h) accum[cy2*w+cx2]++;
+    }
+    let maxV=-1, maxI=-1;
+    for(let i=0;i<accum.length;i++){ if(accum[i]>maxV){ maxV=accum[i]; maxI=i; } }
+    const normScore = maxV / r;
+    if(normScore > best.score){
+      best = { score: normScore, cx: maxI % w, cy: Math.floor(maxI/w), r };
+    }
+  }
+
+  const minScore = Math.max(3, exX.length*0.012);
+  if(best.score*best.r < minScore) return null;
+  return best;
+}
+
+let smoothPos = null;
+
+function drawChart(){
+  cctx.clearRect(0,0,chart.width,chart.height);
+  if(samples.length < 2) return;
+  const maxV = Math.max(0.3, ...samples.map(s=>Math.abs(s.v)));
+  const t0 = samples[0].t, tN = samples[samples.length-1].t;
+  const span = Math.max(0.001, tN - t0);
+  cctx.strokeStyle = getComputedStyle(document.body).color;
+  cctx.lineWidth = 2;
+  cctx.beginPath();
+  samples.forEach((s,idx)=>{
+    const x = ((s.t - t0)/span) * chart.width;
+    const y = chart.height - ((s.v + maxV) / (2*maxV)) * chart.height;
+    idx===0 ? cctx.moveTo(x,y) : cctx.lineTo(x,y);
+  });
+  cctx.stroke();
+  cctx.strokeStyle = '#9993';
+  cctx.beginPath();
+  cctx.moveTo(0,chart.height/2); cctx.lineTo(chart.width,chart.height/2); cctx.stroke();
+}
+
+function draw(){
+  if(video.readyState >= 2){
+    ctx.drawImage(video, 0,0, canvas.width, canvas.height);
+    const det = detectPlate();
+    const fullScale = canvas.width / smallCanvas.width;
+
+    if(det){
+      missCount = 0;
+      const fx = det.cx*fullScale, fy = det.cy*fullScale, fr = det.r*fullScale;
+      smoothPos = smoothPos
+        ? { x: smoothPos.x*0.55+fx*0.45, y: smoothPos.y*0.55+fy*0.45, r: smoothPos.r*0.55+fr*0.45 }
+        : { x:fx, y:fy, r:fr };
+
+      ctx.strokeStyle = '#2bb673'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(smoothPos.x, smoothPos.y, smoothPos.r, 0, 7); ctx.stroke();
+      statusEl.textContent = 'Bilanciere rilevato ✅';
+      statusEl.className = 'status ok';
+
+      const plateDiam = parseFloat(plateDiamInput.value) || 0.45;
+      const scaleMPerPx = plateDiam / (2*smoothPos.r);
+      const now = performance.now();
+
+      if(isTracking && lastPos){
+        const dx = smoothPos.x-lastPos.x, dy = smoothPos.y-lastPos.y;
+        const distM = Math.hypot(dx,dy) * scaleMPerPx;
+        const dt = (now-lastTime)/1000;
+        if(dt > 0.01){
+          const v = distM/dt;
+          velBuffer.push(v);
+          if(velBuffer.length>5) velBuffer.shift();
+          const smoothed = velBuffer.reduce((a,b)=>a+b,0)/velBuffer.length;
+          const mass = parseFloat(totalWeightInput.value) || 0;
+          const power = smoothed * mass * 9.81;
+
+          document.getElementById('curVel').textContent = smoothed.toFixed(2);
+          if(smoothed > peakVel){
+            peakVel = smoothed;
+            document.getElementById('peakVel').textContent = peakVel.toFixed(2);
+            document.getElementById('peakPow').textContent = Math.round(peakVel*mass*9.81);
+          }
+          samples.push({t: now/1000, v: smoothed});
+          if(samples.length > 300) samples.shift();
+          const meaningful = samples.filter(s=>s.v>0.03);
+          if(meaningful.length){
+            const avg = meaningful.reduce((a,s)=>a+s.v,0)/meaningful.length;
+            document.getElementById('avgVel').textContent = avg.toFixed(2);
+            document.getElementById('avgPow').textContent = Math.round(avg*mass*9.81);
+          }
+          drawChart();
+        }
+      }
+      lastPos = smoothPos; lastTime = now;
+    } else {
+      missCount++;
+      if(missCount > 8){
+        statusEl.textContent = 'Nessun bilanciere rilevato: inquadra lateralmente un disco';
+        statusEl.className = 'status bad';
+        lastPos = null;
+        smoothPos = null;
+      }
+    }
+  }
+  requestAnimationFrame(draw);
+}
+</script>
+</body>
+</html>
